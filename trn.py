@@ -1,143 +1,114 @@
 import numpy as np
-import utility as ut  # Funciones auxiliares como sigmoid y softmax
+import pandas as pd
+import utility as ut
 
+def load_data(data_path, idx_igain_path):
+    try:
+        data = pd.read_csv(data_path)
+        idx_igain = pd.read_csv(idx_igain_path, header=None).values.flatten()
+    except FileNotFoundError as e:
+        raise FileNotFoundError(f"Error cargando archivos: {e}")
+    
+    # Seleccionar columnas basadas en idx_igain
+    data = data.iloc[:, idx_igain]
 
-# Preprocesar datos
-def preprocess_data(file_dtrain, file_igain, output_file):
-    """
-    Preprocesa los datos iniciales para convertir las clases y seleccionar características relevantes.
-    Guarda el archivo preprocesado como DataTrain.csv.
-    """
-    data = np.loadtxt(file_dtrain, delimiter=',', skiprows=1, dtype=float)
-    X = data[:, :-1]  # Características
-    y = data[:, -1].astype(int)  # Etiquetas (como enteros)
-    
-    # Convertir clases a binarias: Normal (1,0) y Ataques (0,1)
-    y_binary = np.zeros((y.shape[0], 2))
-    y_binary[np.where(y == 1), 0] = 1.0  # Clase normal
-    y_binary[np.where(y == 2), 1] = 1.0  # Clase ataque
-    
-    # Seleccionar características relevantes usando idx_igain.csv
-    selected_features = np.loadtxt(file_igain, delimiter=',', dtype=int)
-    selected_features = selected_features[selected_features < X.shape[1]]  # Filtrar índices inválidos
-    X = X[:, selected_features]
-    
-    # Guardar DataTrain.csv
-    processed_data = np.hstack((X, y_binary))
-    np.savetxt(output_file, processed_data, delimiter=',', header=",".join([f"var{i}" for i in range(X.shape[1])]) + ",class1,class2", comments='')
-    
-    return X, y_binary
+    # Transformar clases numéricas a binarias y asignar una nueva columna
+    data['binary_labels'] = data.iloc[:, -1].astype(int).apply(lambda x: [1, 0] if x == 1 else [0, 1])
+    data.drop(data.columns[-2], axis=1, inplace=True)  # Eliminar la columna original
+    data.rename(columns={'binary_labels': data.columns[-1]}, inplace=True)  # Renombrar la nueva columna
 
+    return data
 
-# Entrenar SAE-ELM
-def train_sae_elm(X, y, config_file):
-    """
-    Entrena SAE-ELM con múltiples ejecuciones y selecciona la mejor según el error cuadrático medio.
-    """
-    config = np.loadtxt(config_file, delimiter=',', dtype=float)
-    n_hidden1 = int(config[0])  # Capa oculta 1
-    n_hidden2 = int(config[1])  # Capa oculta 2
-    penalty_factor = config[2]  # Factor de penalización
-    n_runs = int(config[3])  # Número de ejecuciones
-    
-    best_beta, best_H2 = None, None
-    min_error = float('inf')
-    
-    for run in range(n_runs):
-        # Inicializar pesos y calcular activaciones
-        W1 = np.random.uniform(-1, 1, (X.shape[1], n_hidden1))
-        H1 = ut.sigmoid(np.dot(X, W1))
-        W2 = np.random.uniform(-1, 1, (n_hidden1, n_hidden2))
-        H2 = ut.sigmoid(np.dot(H1, W2))
-        
-        # Calcular Beta con pseudo-inversa regularizada
-        regularization = penalty_factor * np.eye(H2.shape[1])
-        beta = np.dot(np.linalg.pinv(np.dot(H2.T, H2) + regularization), np.dot(H2.T, y))
-        
-        # Calcular error cuadrático medio
-        y_pred = np.dot(H2, beta)
-        error = np.mean((y - y_pred) ** 2)
-        
-        if error < min_error:
-            min_error = error
-            best_beta = beta
-            best_H2 = H2
-        
-        print(f"Ejecución {run + 1}/{n_runs}: Error = {error}")
-    
-    return best_H2, best_beta
+def train_sae_elm(data, config):
+    # Cargar configuración SAE-ELM
+    hidden_layer_1, hidden_layer_2, penalty, num_runs = pd.read_csv(config, header=None).values.flatten()
 
+    np.random.seed(42)
+    weights_1 = np.random.randn(data.shape[1] - 1, hidden_layer_1)  # (n_features, hidden_layer_1)
+    weights_2 = np.random.randn(hidden_layer_1, hidden_layer_2)  # (hidden_layer_1, hidden_layer_2)
 
-# Entrenar capa Softmax
-def train_softmax(H, y, config_file):
-    """
-    Entrena la capa Softmax usando mADAM y guarda los costos y pesos.
-    """
-    config = np.loadtxt(config_file, delimiter=',', dtype=float)
-    max_iterations = int(config[0])
-    batch_size = int(config[1])
-    learning_rate = config[2]
+    # Proyección en la primera capa oculta
+    H = ut.activation_function(data.iloc[:, :-1].values @ weights_1, type="sigmoid")  # (3999, 20)
+
+    # Calcular la pseudo-inversa correctamente
+    pseudo_inverse = ut.pseudo_inverse(H, penalty)  # Forma (3999, 20)
+
+    print(f"pseudo_inverse shape: {pseudo_inverse.shape}")
+    print(f"weights_2 shape: {weights_2.shape}")
+
+    # Corregir el cálculo de pesos óptimos
+    labels = np.array(data.iloc[:, -1].tolist())
+    weights_optimal = pseudo_inverse @ labels  # (20, 3999) * (3999, 2) = (20, 2)
+
+    if weights_optimal.shape != (hidden_layer_1, labels.shape[1]):
+        raise ValueError(f"weights_optimal generado con dimensiones incorrectas: {weights_optimal.shape}")
     
-    L, m = y.shape[1], H.shape[1]
-    weights = np.random.uniform(-1, 1, (L, m))  # Inicializar pesos
+    return weights_1, weights_optimal
+
+def train_softmax(data, config_softmax_path, weights_1, weights_2):
+    config = pd.read_csv(config_softmax_path, header=None).values.flatten()
+    max_iter, batch_size = map(int, config[:2])
+    learning_rate = float(config[2])
     
-    # Parámetros mADAM
+    hidden_layer_2 = 2  # Debería ser el tamaño de la capa oculta 2
+    n_classes = 2  # Número de clases en la salida
+    weights = np.random.randn(hidden_layer_2, n_classes)  # (2, 2)
+    
+    m, v = 0, 0
     beta1, beta2, epsilon = 0.9, 0.999, 1e-8
-    mt, vt = np.zeros_like(weights), np.zeros_like(weights)
+    log_epsilon = 1e-10  # Small value to avoid log(0)
+    
     costs = []
-    
-    for iteration in range(1, max_iterations + 1):
-        # Mini-batch
-        for i in range(0, H.shape[0], batch_size):
-            X_batch = H[i:i + batch_size]
-            y_batch = y[i:i + batch_size]
-            
-            # Forward pass
-            logits = np.dot(X_batch, weights.T)
-            probabilities = ut.softmax(logits)
-            
-            # Backward pass
-            gradient = np.dot((probabilities - y_batch).T, X_batch) / batch_size
-            mt = beta1 * mt + (1 - beta1) * gradient
-            vt = beta2 * vt + (1 - beta2) * (gradient ** 2)
-            mt_hat = mt / (1 - beta1 ** iteration)
-            vt_hat = vt / (1 - beta2 ** iteration)
-            weights -= learning_rate * mt_hat / (np.sqrt(vt_hat) + epsilon)
+    for i in range(max_iter):
+        indices = np.random.choice(data.index, batch_size, replace=False)
+        X_batch = data.iloc[indices, :-1].values
+        y_batch = np.array(data.iloc[indices, -1].tolist())
         
-        # Calcular costo
-        logits = np.dot(H, weights.T)
-        probabilities = ut.softmax(logits)
-        cost = -np.mean(np.sum(y * np.log(probabilities + epsilon), axis=1))
+        # Pasar a través de la primera capa oculta
+        H1 = ut.activation_function(X_batch @ weights_1, type="sigmoid")
+        
+        # Pasar a través de la segunda capa oculta
+        H2 = ut.activation_function(H1 @ weights_2, type="sigmoid")
+        
+        logits = H2 @ weights
+        exp_logits = np.exp(logits - np.max(logits, axis=1, keepdims=True))
+        probabilities = exp_logits / np.sum(exp_logits, axis=1, keepdims=True)
+        cost = -np.mean(np.sum(np.log(probabilities + log_epsilon) * y_batch, axis=1))
         costs.append(cost)
-        if iteration % 100 == 0:
-            print(f"Iteración {iteration}/{max_iterations}: Costo = {cost}")
-    
-    # Guardar costos y pesos
-    np.savetxt("costo.csv", costs, delimiter=',')
-    np.savetxt("pesos.csv", weights, delimiter=',')
-    
-    return weights
+        
+        gradients = H2.T @ (probabilities - y_batch) / batch_size
+        m = beta1 * m + (1 - beta1) * gradients
+        v = beta2 * v + (1 - beta2) * gradients ** 2
+        m_hat = m / (1 - beta1 ** (i + 1))
+        v_hat = v / (1 - beta2 ** (i + 1))
+        weights -= learning_rate * m_hat / (np.sqrt(v_hat) + epsilon)
+        
+    return weights, costs
 
 
-# Programa principal
 def main():
     file_dtrain = "dtrain.csv"
     file_igain = "idx_igain.csv"
-    output_file = "DataTrain.csv"
     config_sae = "config_sae.csv"
     config_softmax = "config_softmax.csv"
-    
-    # Preprocesar datos
-    X, y = preprocess_data(file_dtrain, file_igain, output_file)
+
+    # Cargar datos
+    data = load_data(file_dtrain, file_igain)
     
     # Entrenar SAE-ELM
-    H, beta = train_sae_elm(X, y, config_sae)
-    
-    # Entrenar Softmax
-    softmax_weights = train_softmax(H, y, config_softmax)
-    
-    print("Entrenamiento completado. Archivos generados: DataTrain.csv, costo.csv, pesos.csv")
+    weights_1, best_w2 = train_sae_elm(data, config_sae)
 
+    # Entrenar Softmax
+    weights_softmax, costs = train_softmax(data, config_softmax, weights_1, best_w2)
+
+    # Guardar salidas
+    pd.DataFrame(costs).to_csv('costo.csv', index=False, header=False)
+    pd.DataFrame(weights_1).to_csv('w1.csv', index=False, header=False)
+    pd.DataFrame(best_w2).to_csv('w2.csv', index=False, header=False)
+    pd.DataFrame(weights_softmax).to_csv('w3.csv', index=False, header=False)
+
+    print("Entrenamiento completado. Archivos generados: costo.csv, w1.csv, w2.csv, w3.csv")
 
 if __name__ == "__main__":
     main()
+

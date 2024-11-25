@@ -42,7 +42,10 @@ def mse(y_true, y_pred):
     """
     Calcula el error cuadrático medio.
     """
+    if y_true.shape != y_pred.shape:
+        raise ValueError(f"Las dimensiones de y_true {y_true.shape} y y_pred {y_pred.shape} no coinciden.")
     return np.mean((y_true - y_pred) ** 2)
+
 
 def accuracy(y_true, y_pred):
     """
@@ -50,7 +53,8 @@ def accuracy(y_true, y_pred):
     """
     correct = np.sum(y_true == y_pred)
     total = y_true.shape[0]
-    return correct / total
+    return correct / total if total > 0 else 0
+
 
 def pseudo_inverse(H, penalty_factor):
     """
@@ -58,3 +62,15 @@ def pseudo_inverse(H, penalty_factor):
     """
     regularization = max(penalty_factor, 1e-8) * np.eye(H.shape[1])  # Regularización mínima
     return np.linalg.pinv(np.dot(H.T, H) + regularization).dot(H.T)
+
+def activation_function(x, type="sigmoid"):
+    """
+    Aplica una función de activación (sigmoid o softmax).
+    """
+    if type == "sigmoid":
+        return sigmoid(x)
+    elif type == "softmax":
+        return softmax(x)
+    else:
+        raise ValueError(f"Tipo de activación desconocido: {type}")
+
