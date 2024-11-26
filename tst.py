@@ -1,91 +1,107 @@
+# Testing : EDL
 import numpy as np
-import pandas as pd
 import utility as ut
+import time
 
-def load_test_data(data_path, idx_igain_path):
-    """Carga y transforma los datos de prueba."""
-    try:
-        data = pd.read_csv(data_path)
-        idx_igain = pd.read_csv(idx_igain_path, header=None).values.flatten()
-    except FileNotFoundError as e:
-        raise FileNotFoundError(f"Error cargando archivos: {e}")
-    
-    if max(idx_igain) >= data.shape[1]:
-        raise ValueError("Los índices de idx_igain.csv exceden las columnas en dtest.csv.")
-    
-    data = data.iloc[:, idx_igain]
-    labels = data.iloc[:, -1].values
-    features = data.iloc[:, :-1].values
-    
-    # Transformar clases numéricas a binarias
-    binary_labels = np.array([[1, 0] if label == 1 else [0, 1] for label in labels])
-    
-    return features, binary_labels
 
-def predict(features, weights_1, weights_2, weights_softmax):
-    """Genera predicciones basadas en características de entrada y pesos entrenados."""
+def forward_edl():
+    """
+    Forward pass through the trained EDL network
+    Returns predictions for test data
+    """
+    # Start timing
+    start_time = time.time()
+
     try:
-        hidden_layer_1 = ut.activation_function(features @ weights_1, type="sigmoid")
-        hidden_layer_2 = ut.activation_function(hidden_layer_1 @ weights_2, type="sigmoid")
-        
-        if hidden_layer_2.shape[1] != weights_softmax.shape[0]:
-            raise ValueError(f"Dimensiones incompatibles: hidden_layer_2 {hidden_layer_2.shape}, weights_softmax {weights_softmax.shape}")
-        
-        logits = hidden_layer_2 @ weights_softmax
-        exp_logits = np.exp(logits - np.max(logits, axis=1, keepdims=True))
-        probabilities = exp_logits / np.sum(exp_logits, axis=1, keepdims=True)
-        
-        return probabilities
+        # Load test data
+        print("Loading test data...")
+        X_test, y_test = ut.load_and_preprocess_data('dtest.csv')
+
+        # Load trained weights and normalization parameters
+        print("Loading weights and normalization parameters...")
+        weights = ut.load_weights()
+        w1, w2, w3 = weights
+
+        # Load normalization parameters
+        try:
+            mean = np.load('output/mean.npy')
+            std = np.load('output/std.npy')
+        except Exception as e:
+            raise Exception(
+                f"Error loading normalization parameters: {str(e)}")
+
+        # Normalize test data using training statistics
+        print("Normalizing test data...")
+        X_test_norm = (X_test - mean) / std
+
+        print("Performing forward pass...")
+        # First SAE layer forward pass
+        H1 = ut.sigmoid(X_test_norm @ w1)
+
+        # Second SAE layer forward pass
+        H2 = ut.sigmoid(H1 @ w2)
+
+        # Softmax layer forward pass with numerical stability
+        logits = H2 @ w3
+        # Subtract max for numerical stability
+        logits -= np.max(logits, axis=1, keepdims=True)
+        exp_logits = np.exp(logits)
+        predictions = exp_logits / np.sum(exp_logits, axis=1, keepdims=True)
+
+        # Calculate confusion matrix and F-scores
+        print("Calculating metrics...")
+        conf_matrix, f_scores = ut.mtx_confusion(y_test, predictions)
+
+        # Calculate and print additional metrics
+        print("\nPerformance Metrics:")
+        # Calculate accuracy
+        accuracy = (conf_matrix[0, 0] +
+                    conf_matrix[1, 1]) / np.sum(conf_matrix)
+        print(f"Overall Accuracy: {accuracy:.4f}")
+
+        # Calculate metrics for each class
+        for i, class_name in enumerate(['Normal', 'Attack']):
+            precision = conf_matrix[i, i] / np.sum(conf_matrix[:, i])
+            recall = conf_matrix[i, i] / np.sum(conf_matrix[i, :])
+            f1 = f_scores[i]
+            print(f"\n{class_name} Class Metrics:")
+            print(f"Precision: {precision:.4f}")
+            print(f"Recall: {recall:.4f}")
+            print(f"F1-Score: {f1:.4f}")
+
+        # Save outputs
+        print("\nSaving results...")
+        ut.save_test_outputs(conf_matrix, f_scores)
+
+        # Check execution time
+        execution_time = time.time() - start_time
+        if execution_time > 30:
+            print(f"Warning: Execution time ({
+                  execution_time:.2f}s) exceeded 30 seconds limit")
+
+        return predictions, conf_matrix, f_scores
+
     except Exception as e:
-        raise RuntimeError(f"Error durante la predicción: {e}")
+        print(f"Error in forward_edl: {str(e)}")
+        return None, None, None
 
-def calculate_metrics(true_labels, predictions):
-    """Calcula matriz de confusión y métricas de desempeño."""
-    true_labels = np.argmax(true_labels, axis=1)
-    predictions = np.argmax(predictions, axis=1)
-    
-    tp = np.sum((true_labels == 1) & (predictions == 1))
-    tn = np.sum((true_labels == 0) & (predictions == 0))
-    fp = np.sum((true_labels == 0) & (predictions == 1))
-    fn = np.sum((true_labels == 1) & (predictions == 0))
-    cm = np.array([[tp, fp], [fn, tn]])
-    
-    precision = tp / (tp + fp) if (tp + fp) > 0 else 0
-    recall = tp / (tp + fn) if (tp + fn) > 0 else 0
-    f_score = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0
-    accuracy = (tp + tn) / (tp + fp + tn + fn) if (tp + fp + tn + fn) > 0 else 0
-    
-    return cm, precision, recall, f_score, accuracy
 
 def main():
-    """Función principal para cargar datos, realizar predicciones y calcular métricas."""
-    try:
-        features, true_labels = load_test_data('dtest.csv', 'idx_igain.csv')
-        
-        weights_1 = np.loadtxt('w1.csv', delimiter=',')
-        weights_2 = np.loadtxt('w2.csv', delimiter=',')
-        weights_softmax = np.loadtxt('w3.csv', delimiter=',')
-        
-        if weights_2.shape[0] != weights_1.shape[1]:
-            raise ValueError(f"Incompatible shapes: weights_2 {weights_2.shape}, weights_1 {weights_1.shape}")
-        
-        if weights_softmax.shape[0] != weights_2.shape[1]:
-            raise ValueError(f"Incompatible shapes: weights_softmax {weights_softmax.shape}, weights_2 {weights_2.shape}")
-        
-        predictions = predict(features, weights_1, weights_2, weights_softmax)
-        
-        cm, precision, recall, f_score, accuracy = calculate_metrics(true_labels, predictions)
-        
-        np.savetxt('confusión.csv', cm, delimiter=',', fmt='%d')
-        np.savetxt('fscores.csv', np.array([f_score]), delimiter=',', fmt='%.4f')
-        
-        print(f"Precisión: {precision:.4f}")
-        print(f"Recall: {recall:.4f}")
-        print(f"F-score: {f_score:.4f}")
-        print(f"Exactitud: {accuracy:.4f}")
-        
-    except Exception as e:
-        print(f"Error en main: {e}")
+    print("Starting EDL testing...")
+    predictions, conf_matrix, f_scores = forward_edl()
+    if predictions is not None:
+        print("\nTesting completed successfully")
 
-if __name__ == "__main__":
+        # Print confusion matrix in a more readable format
+        print("\nConfusion Matrix:")
+        print("                 Predicted Normal  Predicted Attack")
+        print(f"Actual Normal    {conf_matrix[0, 0]:^15.0f} {
+              conf_matrix[0, 1]:^16.0f}")
+        print(f"Actual Attack    {conf_matrix[1, 0]:^15.0f} {
+              conf_matrix[1, 1]:^16.0f}")
+    else:
+        print("Testing failed")
+
+
+if __name__ == '__main__':
     main()
