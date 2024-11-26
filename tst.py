@@ -1,7 +1,58 @@
-# Testing : EDL
 import numpy as np
-import utility as ut
 import time
+import utility as ut
+
+def forward_pass(X_test, weights, mean, std):
+    """
+    Perform a forward pass through the EDL network.
+    Args:
+        X_test (numpy array): Test features.
+        weights (list): Trained weights [w1, w2, w3].
+        mean (numpy array): Mean of training data for normalization.
+        std (numpy array): Std deviation of training data for normalization.
+    Returns:
+        numpy array: Predicted probabilities for test data.
+    """
+    # Normalize test data
+    X_test_norm = (X_test - mean) / std
+
+    # Forward pass through each layer
+    w1, w2, w3 = weights
+    H1 = ut.sigmoid(X_test_norm @ w1)
+    H2 = ut.sigmoid(H1 @ w2)
+    logits = H2 @ w3
+
+    # Numerical stability adjustment for Softmax
+    logits -= np.max(logits, axis=1, keepdims=True)
+    exp_logits = np.exp(logits)
+    predictions = exp_logits / np.sum(exp_logits, axis=1, keepdims=True)
+
+    return predictions
+
+
+def calculate_metrics(y_test, predictions):
+    """
+    Calculate confusion matrix, F-scores, and additional metrics.
+    Args:
+        y_test (numpy array): True binary labels.
+        predictions (numpy array): Predicted probabilities.
+    Returns:
+        tuple: Confusion matrix, F-scores, and overall accuracy.
+    """
+    conf_matrix, f_scores = ut.mtx_confusion(y_test, predictions)
+
+    # Overall accuracy
+    accuracy = np.trace(conf_matrix) / np.sum(conf_matrix)
+
+    # Class-specific metrics
+    class_metrics = []
+    for i in range(2):
+        precision = conf_matrix[i, i] / np.sum(conf_matrix[:, i]) if np.sum(conf_matrix[:, i]) > 0 else 0
+        recall = conf_matrix[i, i] / np.sum(conf_matrix[i, :]) if np.sum(conf_matrix[i, :]) > 0 else 0
+        f1 = f_scores[i]
+        class_metrics.append({'precision': precision, 'recall': recall, 'f1': f1})
+
+    return conf_matrix, class_metrics, accuracy
 
 
 def forward_edl():

@@ -76,12 +76,15 @@ def train_softmax(data, labels, config):
         for i in range(n_batches):
             start_idx, end_idx = i * config['batch_size'], (i + 1) * config['batch_size']
             X_batch, y_batch = data_shuffled[start_idx:end_idx], labels_shuffled[start_idx:end_idx]
+            
             logits = X_batch @ w
             logits -= np.max(logits, axis=1, keepdims=True)
             exp_logits = np.exp(logits)
             probs = exp_logits / np.sum(exp_logits, axis=1, keepdims=True)
+            
             batch_cost = -np.mean(np.sum(y_batch * np.log(probs + epsilon), axis=1))
             epoch_cost += batch_cost
+            
             grad = (1 / config['batch_size']) * X_batch.T @ (probs - y_batch)
             m, v = beta1 * m + (1 - beta1) * grad, beta2 * v + (1 - beta2) * (grad ** 2)
             m_hat, v_hat = m / (1 - beta1 ** (epoch + 1)), v / (1 - beta2 ** (epoch + 1))
@@ -112,9 +115,11 @@ def train_edl():
     start_time = time.time()
 
     try:
-        sae_config = ut.read_config_sae()
-        softmax_config = ut.read_config_softmax()
+        sae_config = ut.read_config('sae')
+        softmax_config = ut.read_config('softmax')
+
         print("Loading and preprocessing data...")
+        
         X_train, y_train = ut.load_and_preprocess_data('dtrain.csv')
         print("Normalizing data...")
         mean, std = np.mean(X_train, axis=0), np.std(X_train, axis=0) + 1e-10
